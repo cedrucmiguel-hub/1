@@ -148,6 +148,41 @@ create table if not exists public.liability_snapshots (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.member_login_activity (
+  id bigserial primary key,
+  member_id bigint not null references public.loyalty_members(id) on delete cascade,
+  login_at timestamptz not null default now(),
+  channel text not null default 'web',
+  source text not null default 'customer_portal',
+  created_at timestamptz not null default now(),
+  constraint member_login_activity_channel_check check (
+    channel in ('web', 'mobile', 'kiosk', 'system')
+  )
+);
+
+create table if not exists public.member_reengagement_actions (
+  id bigserial primary key,
+  member_id bigint not null references public.loyalty_members(id) on delete cascade,
+  initiated_by uuid references auth.users(id) on delete set null,
+  risk_level text not null,
+  action_type text not null,
+  recommended_action text not null,
+  action_notes text,
+  status text not null default 'planned',
+  success boolean,
+  success_metric text,
+  created_at timestamptz not null default now(),
+  sent_at timestamptz,
+  completed_at timestamptz,
+  follow_up_due_at timestamptz,
+  constraint member_reengagement_actions_risk_level_check check (
+    risk_level in ('Low', 'Medium', 'High')
+  ),
+  constraint member_reengagement_actions_status_check check (
+    status in ('planned', 'sent', 'completed', 'dismissed')
+  )
+);
+
 insert into storage.buckets (id, name, public)
 values ('profile-photos', 'profile-photos', true)
 on conflict (id) do update
@@ -181,6 +216,12 @@ create index if not exists idx_notification_outbox_user_created
 on public.notification_outbox (user_id, created_at desc);
 create index if not exists idx_notification_outbox_status_created
 on public.notification_outbox (status, created_at desc);
+create index if not exists idx_member_login_activity_member_date
+on public.member_login_activity (member_id, login_at desc);
+create index if not exists idx_member_reengagement_actions_member_date
+on public.member_reengagement_actions (member_id, created_at desc);
+create index if not exists idx_member_reengagement_actions_status_date
+on public.member_reengagement_actions (status, created_at desc);
 
 -- ============================================================
 -- SEED DATA
@@ -332,11 +373,22 @@ as $$
   select coalesce(auth.jwt() ->> 'email', '')
 $$;
 
+create or replace function public.app_is_admin()
+returns boolean
+language sql
+stable
+as $$
+  select coalesce(public.app_current_role() = 'admin', false)
+    or lower(public.app_current_email()) like '%@admin.loyaltyhub.com'
+$$;
+
 -- ============================================================
 -- RLS AND STORAGE POLICIES
 -- ============================================================
 
 alter table public.loyalty_members enable row level security;
+alter table public.member_login_activity enable row level security;
+alter table public.member_reengagement_actions enable row level security;
 
 drop policy if exists loyalty_members_select_own on public.loyalty_members;
 create policy loyalty_members_select_own
@@ -361,6 +413,66 @@ with check (
   public.app_current_role() = 'admin'
   or lower(email) = lower(public.app_current_email())
 );
+
+drop policy if exists member_login_activity_select on public.member_login_activity;
+create policy member_login_activity_select
+on public.member_login_activity
+for select
+to authenticated
+using (
+  public.app_is_admin()
+  or exists (
+    select 1
+    from public.loyalty_members m
+    where m.id = member_login_activity.member_id
+      and lower(m.email) = lower(public.app_current_email())
+  )
+);
+
+drop policy if exists member_login_activity_insert on public.member_login_activity;
+create policy member_login_activity_insert
+on public.member_login_activity
+for insert
+to authenticated
+with check (
+  public.app_is_admin()
+  or exists (
+    select 1
+    from public.loyalty_members m
+    where m.id = member_login_activity.member_id
+      and lower(m.email) = lower(public.app_current_email())
+  )
+);
+
+drop policy if exists member_reengagement_actions_select on public.member_reengagement_actions;
+create policy member_reengagement_actions_select
+on public.member_reengagement_actions
+for select
+to authenticated
+using (
+  public.app_is_admin()
+  or exists (
+    select 1
+    from public.loyalty_members m
+    where m.id = member_reengagement_actions.member_id
+      and lower(m.email) = lower(public.app_current_email())
+  )
+);
+
+drop policy if exists member_reengagement_actions_insert_admin on public.member_reengagement_actions;
+create policy member_reengagement_actions_insert_admin
+on public.member_reengagement_actions
+for insert
+to authenticated
+with check (public.app_is_admin());
+
+drop policy if exists member_reengagement_actions_update_admin on public.member_reengagement_actions;
+create policy member_reengagement_actions_update_admin
+on public.member_reengagement_actions
+for update
+to authenticated
+using (public.app_is_admin())
+with check (public.app_is_admin());
 
 drop policy if exists profile_photos_read on storage.objects;
 create policy profile_photos_read

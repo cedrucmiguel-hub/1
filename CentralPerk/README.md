@@ -16,4 +16,6 @@
   Run `npm run server` to serve the production build on `http://localhost:4173`.
 
   Supabase connection values are read from `CentralPerk/.env`.
+
+  If you cloned the repo from GitHub, create `CentralPerk/.env` first by copying `CentralPerk/.env.example`.
   

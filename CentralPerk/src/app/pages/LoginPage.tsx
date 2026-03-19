@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../../utils/supabase/client';
 import { clearStoredAuth, getRoleFromSession } from '../auth/auth';
+import { trackMemberLoginActivity } from '../lib/loyalty-supabase';
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
@@ -58,6 +59,18 @@ export function LoginPage() {
           );
           setIsSubmitting(false);
           return;
+        }
+
+        if (resolvedRole === 'customer') {
+          try {
+            await trackMemberLoginActivity({
+              fallbackEmail: authEmail,
+              channel: 'web',
+              source: 'customer_login',
+            });
+          } catch (loginTrackError) {
+            console.warn('Unable to record member login activity:', loginTrackError);
+          }
         }
 
         navigate('/', { replace: true });

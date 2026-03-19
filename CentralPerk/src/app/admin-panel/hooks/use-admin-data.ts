@@ -3,10 +3,14 @@ import { supabase } from "../../../utils/supabase/client";
 import type {
   AdminMetrics,
   LoyaltyTransaction,
+  MemberLoginActivity,
   Member,
   MemberActivityRow,
   MemberGrowthPoint,
+  PointsLot,
   RewardPopularityRow,
+  RewardCatalogRow,
+  ReengagementAction,
   SeriesPoint,
   TierDistribution,
   TierMovementPoint,
@@ -18,6 +22,7 @@ import {
   type EarningRule,
 } from "../../lib/loyalty-supabase";
 import { resolveTier, type TierRule } from "../../lib/loyalty-engine";
+import { buildAdvancedAnalyticsDatasets } from "../lib/advanced-insights";
 
 type TierHistoryRow = {
   old_tier?: string | null;
@@ -59,11 +64,34 @@ function txType(value: string) {
   return "earned";
 }
 
+function isMissingRelationError(error: unknown, table: string) {
+  const message = String(
+    (error as { message?: unknown; details?: unknown; hint?: unknown })?.message ??
+      (error as { details?: unknown })?.details ??
+      (error as { hint?: unknown })?.hint ??
+      ""
+  ).toLowerCase();
+
+  return (
+    message.includes(`relation "${table.toLowerCase()}" does not exist`) ||
+    message.includes(`relation "public.${table.toLowerCase()}" does not exist`) ||
+    message.includes(`could not find the table 'public.${table.toLowerCase()}' in the schema cache`) ||
+    message.includes(`could not find the table "${table.toLowerCase()}" in the schema cache`) ||
+    message.includes(`could not find the table '${table.toLowerCase()}' in the schema cache`) ||
+    (message.includes(table.toLowerCase()) && message.includes("schema cache")) ||
+    (message.includes(table.toLowerCase()) && message.includes("does not exist"))
+  );
+}
+
 export function useAdminData() {
   const [members, setMembers] = useState<Member[]>([]);
   const [redemptions, setRedemptions] = useState<LoyaltyTransaction[]>([]);
   const [transactions, setTransactions] = useState<LoyaltyTransaction[]>([]);
   const [tierHistory, setTierHistory] = useState<TierHistoryRow[]>([]);
+  const [pointsLots, setPointsLots] = useState<PointsLot[]>([]);
+  const [rewardsCatalog, setRewardsCatalog] = useState<RewardCatalogRow[]>([]);
+  const [loginActivity, setLoginActivity] = useState<MemberLoginActivity[]>([]);
+  const [reengagementActions, setReengagementActions] = useState<ReengagementAction[]>([]);
   const [tierRules, setTierRules] = useState<TierRule[]>([]);
   const [earningRules, setEarningRules] = useState<EarningRule[]>([]);
   const [redemptionValuePerPoint, setRedemptionValuePerPoint] = useState<number>(0.01);
@@ -86,6 +114,10 @@ export function useAdminData() {
         redemptionsRes,
         transactionsRes,
         tierHistoryRes,
+        pointsLotsRes,
+        rewardsCatalogRes,
+        loginActivityRes,
+        reengagementActionsRes,
         rules,
         earningRulesRes,
         redemptionSettingsRes,
@@ -97,6 +129,10 @@ export function useAdminData() {
           .select("*, loyalty_members(first_name, last_name, member_number)")
           .order("transaction_date", { ascending: false }),
         supabase.from("tier_history").select("old_tier,new_tier,changed_at").order("changed_at", { ascending: false }).limit(500),
+        supabase.from("points_lots").select("*").order("expiry_date", { ascending: true }),
+        supabase.from("rewards_catalog").select("*").order("points_cost", { ascending: true }),
+        supabase.from("member_login_activity").select("*").order("login_at", { ascending: false }).limit(5000),
+        supabase.from("member_reengagement_actions").select("*").order("created_at", { ascending: false }).limit(5000),
         fetchTierRules(),
         fetchActiveEarningRules(),
         supabase
@@ -110,11 +146,37 @@ export function useAdminData() {
 
       if (membersRes.error) throw membersRes.error;
       if (transactionsRes.error) throw transactionsRes.error;
+      if (pointsLotsRes.error && !isMissingRelationError(pointsLotsRes.error, "points_lots")) throw pointsLotsRes.error;
+      if (rewardsCatalogRes.error && !isMissingRelationError(rewardsCatalogRes.error, "rewards_catalog")) throw rewardsCatalogRes.error;
+      if (loginActivityRes.error && !isMissingRelationError(loginActivityRes.error, "member_login_activity")) throw loginActivityRes.error;
+      if (reengagementActionsRes.error && !isMissingRelationError(reengagementActionsRes.error, "member_reengagement_actions")) {
+        throw reengagementActionsRes.error;
+      }
 
       setMembers((membersRes.data || []) as Member[]);
       setRedemptions(redemptionsRes.error ? [] : ((redemptionsRes.data || []) as LoyaltyTransaction[]));
       setTransactions((transactionsRes.data || []) as LoyaltyTransaction[]);
       setTierHistory((tierHistoryRes.error ? [] : tierHistoryRes.data || []) as TierHistoryRow[]);
+      setPointsLots(
+        pointsLotsRes.error
+          ? []
+          : ((pointsLotsRes.data || []) as PointsLot[])
+      );
+      setRewardsCatalog(
+        rewardsCatalogRes.error
+          ? []
+          : ((rewardsCatalogRes.data || []) as RewardCatalogRow[])
+      );
+      setLoginActivity(
+        loginActivityRes.error
+          ? []
+          : ((loginActivityRes.data || []) as MemberLoginActivity[])
+      );
+      setReengagementActions(
+        reengagementActionsRes.error
+          ? []
+          : ((reengagementActionsRes.data || []) as ReengagementAction[])
+      );
       setTierRules(rules);
       setEarningRules(earningRulesRes);
 
@@ -357,5 +419,35 @@ export function useAdminData() {
     } satisfies AdminMetrics;
   }, [members, redemptions, transactions, tierHistory, tierRules, redemptionValuePerPoint]);
 
-  return { members, transactions, loading, error, metrics, tierRules, earningRules, refetch: fetchData };
+  const insights = useMemo(
+    () =>
+      buildAdvancedAnalyticsDatasets({
+        members,
+        transactions,
+        pointsLots,
+        rewardsCatalog,
+        loginActivity,
+        reengagementActions,
+        tierRules,
+        redemptionValuePerPoint,
+      }),
+    [members, transactions, pointsLots, rewardsCatalog, loginActivity, reengagementActions, tierRules, redemptionValuePerPoint]
+  );
+
+  return {
+    members,
+    transactions,
+    pointsLots,
+    rewardsCatalog,
+    loginActivity,
+    reengagementActions,
+    loading,
+    error,
+    metrics,
+    insights,
+    tierRules,
+    earningRules,
+    redemptionValuePerPoint,
+    refetch: fetchData,
+  };
 }

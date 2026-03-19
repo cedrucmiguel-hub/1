@@ -65,6 +65,25 @@ function isMissingColumnError(error: unknown, table: string, column: string): bo
   );
 }
 
+function isMissingRelationError(error: unknown, table: string): boolean {
+  const message = String(
+    (error as { message?: unknown; details?: unknown; hint?: unknown })?.message ??
+      (error as { details?: unknown })?.details ??
+      (error as { hint?: unknown })?.hint ??
+      ""
+  ).toLowerCase();
+
+  return (
+    message.includes(`relation "${table.toLowerCase()}" does not exist`) ||
+    message.includes(`relation "public.${table.toLowerCase()}" does not exist`) ||
+    message.includes(`could not find the table 'public.${table.toLowerCase()}' in the schema cache`) ||
+    message.includes(`could not find the table "${table.toLowerCase()}" in the schema cache`) ||
+    message.includes(`could not find the table '${table.toLowerCase()}' in the schema cache`) ||
+    (message.includes(table.toLowerCase()) && message.includes("schema cache")) ||
+    (message.includes(table.toLowerCase()) && message.includes("does not exist"))
+  );
+}
+
 async function insertLoyaltyTransaction(payload: AnyRecord): Promise<void> {
   const attempts: AnyRecord[] = [];
   const seen = new Set<string>();
@@ -794,4 +813,128 @@ export async function queueExpiryReminderNotifications() {
   const { data, error } = await supabase.rpc("loyalty_queue_expiry_warning_notifications");
   if (error) throw error;
   return Number(data || 0);
+}
+
+export async function trackMemberLoginActivity(input?: {
+  memberIdentifier?: string;
+  fallbackEmail?: string;
+  channel?: "web" | "mobile" | "kiosk" | "system";
+  source?: string;
+}) {
+  const member = await findMember(input?.memberIdentifier, input?.fallbackEmail);
+  if (!member) return false;
+
+  const pk = getMemberPk(member);
+  if (!pk) return false;
+
+  const result = await supabase.from("member_login_activity").insert({
+    member_id: pk.value,
+    login_at: new Date().toISOString(),
+    channel: input?.channel ?? "web",
+    source: input?.source ?? "customer_portal",
+  });
+
+  if (result.error) {
+    if (isMissingRelationError(result.error, "member_login_activity")) return false;
+    throw result.error;
+  }
+
+  return true;
+}
+
+export async function createReengagementAction(input: {
+  memberIdentifier: string;
+  fallbackEmail?: string;
+  riskLevel: "Low" | "Medium" | "High";
+  actionType: string;
+  recommendedAction: string;
+  actionNotes?: string;
+  status?: "planned" | "sent" | "completed" | "dismissed";
+  followUpDueAt?: string;
+}) {
+  const member = await findMember(input.memberIdentifier, input.fallbackEmail);
+  if (!member) throw new Error("Member not found in loyalty_members.");
+
+  const pk = getMemberPk(member);
+  if (!pk) throw new Error("Member primary key is missing.");
+
+  const authRes = await supabase.auth.getUser();
+  if (authRes.error) throw authRes.error;
+
+  const { data, error } = await supabase
+    .from("member_reengagement_actions")
+    .insert({
+      member_id: pk.value,
+      initiated_by: authRes.data.user?.id ?? null,
+      risk_level: input.riskLevel,
+      action_type: input.actionType,
+      recommended_action: input.recommendedAction,
+      action_notes: input.actionNotes ?? null,
+      status: input.status ?? "planned",
+      follow_up_due_at: input.followUpDueAt ?? null,
+      sent_at: input.status === "sent" ? new Date().toISOString() : null,
+      completed_at: input.status === "completed" ? new Date().toISOString() : null,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    if (isMissingRelationError(error, "member_reengagement_actions")) {
+      throw new Error("Run the updated Supabase SQL first to enable re-engagement tracking.");
+    }
+    throw error;
+  }
+
+  return data as AnyRecord;
+}
+
+export async function updateReengagementActionOutcome(input: {
+  id: number | string;
+  status?: "planned" | "sent" | "completed" | "dismissed";
+  success?: boolean | null;
+  successMetric?: string;
+  sentAt?: string | null;
+  completedAt?: string | null;
+}) {
+  const patch: AnyRecord = {
+    success: input.success ?? null,
+    success_metric: input.successMetric ?? null,
+  };
+
+  if (input.status) patch.status = input.status;
+  if (input.sentAt !== undefined) patch.sent_at = input.sentAt;
+  if (input.completedAt !== undefined) patch.completed_at = input.completedAt;
+  if (input.status === "sent" && input.sentAt === undefined) patch.sent_at = new Date().toISOString();
+  if (input.status === "completed" && input.completedAt === undefined) patch.completed_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("member_reengagement_actions")
+    .update(patch)
+    .eq("id", input.id)
+    .select("*")
+    .single();
+
+  if (error) {
+    if (isMissingRelationError(error, "member_reengagement_actions")) {
+      throw new Error("Run the updated Supabase SQL first to enable re-engagement tracking.");
+    }
+    throw error;
+  }
+
+  return data as AnyRecord;
+}
+
+export async function loadReengagementActions() {
+  const { data, error } = await supabase
+    .from("member_reengagement_actions")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    if (isMissingRelationError(error, "member_reengagement_actions")) return [];
+    throw error;
+  }
+
+  return (data || []) as AnyRecord[];
 }

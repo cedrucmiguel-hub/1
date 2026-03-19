@@ -17,6 +17,9 @@ export interface LoyaltyTransaction {
   points: number;
   transaction_type: string;
   transaction_date: string;
+  amount_spent?: number | null;
+  receipt_id?: string | null;
+  expiry_date?: string | null;
   reason?: string;
   description?: string;
   loyalty_members?: {
@@ -62,6 +65,56 @@ export interface MemberActivityRow {
 export interface RewardPopularityRow {
   label: string;
   count: number;
+}
+
+export interface PointsLot {
+  id: number | string;
+  member_id: string | number;
+  source_transaction_id?: number | string | null;
+  original_points: number;
+  remaining_points: number;
+  earned_at: string;
+  expiry_date: string;
+  created_at?: string;
+}
+
+export interface RewardCatalogRow {
+  id?: number | string;
+  reward_id: string;
+  name: string;
+  description?: string | null;
+  points_cost: number;
+  category?: string | null;
+  image_url?: string | null;
+  is_active?: boolean;
+  expiry_date?: string | null;
+  created_at?: string;
+}
+
+export interface MemberLoginActivity {
+  id: number | string;
+  member_id: string | number;
+  login_at: string;
+  channel?: string | null;
+  source?: string | null;
+  created_at?: string;
+}
+
+export interface ReengagementAction {
+  id: number | string;
+  member_id: string | number;
+  initiated_by?: string | null;
+  risk_level: "Low" | "Medium" | "High";
+  action_type: string;
+  recommended_action: string;
+  action_notes?: string | null;
+  status: "planned" | "sent" | "completed" | "dismissed";
+  success?: boolean | null;
+  success_metric?: string | null;
+  created_at: string;
+  sent_at?: string | null;
+  completed_at?: string | null;
+  follow_up_due_at?: string | null;
 }
 
 export interface AdminMetrics {
